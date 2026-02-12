@@ -1,0 +1,21 @@
+ai-context-compression==0.1.0
+
+# Core dependencies
+zstandard>=0.21.0
+lz4>=4.3.0
+tiktoken>=0.5.0
+
+# Optional dependencies
+scikit-learn>=1.0.0  # For TF-IDF fallback in semantic compression
+scipy>=1.10.0        # For cosine similarity
+
+# API server
+# No additional dependencies - uses stdlib http.server
+
+[dev]
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-timeout>=2.0.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
