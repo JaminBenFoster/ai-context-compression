@@ -1,7 +1,7 @@
 """
-Token Compression Engine
+Semantic compression using embeddings.
 
-Implements statistical compression for LLM context windows.
+Identifies redundant concepts and removes overlapping information.
 """
 
 import re
@@ -10,6 +10,21 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 import hashlib
 
+# Lazy-load heavy dependencies
+def _import_sentence_transformers():
+    try:
+        from sentence_transformers import SentenceTransformer
+        return SentenceTransformer("all-MiniLM-L6-v2")
+    except ImportError:
+        return "keyword"
+
+def _import_sklearn():
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+        return TfidfVectorizer, cosine_similarity
+    except ImportError:
+        return None, None
 
 @dataclass
 class CompressionResult:
@@ -176,25 +191,32 @@ class TokenCompressor:
     ) -> str:
         """Remove redundant tokens based on linguistic redundancy."""
         preserve_keywords = preserve_keywords or []
-        preserve_lower = set(kw.lower() for kw in preserve_keywords)
         
         # Split into sentences
         sentences = re.split(r'(?<=[.!?])\s+', text)
+        
+        if len(sentences) <= 1:
+            # Nothing to compress
+            return text
         
         # Score each sentence for importance
         scored_sentences = []
         for i, sentence in enumerate(sentences):
             words = sentence.split()
             
-            # Skip if contains preserved keywords
-            if any(kw.lower() in sentence.lower() for kw in preserve_keywords):
-                scored_sentences.append((i, 1.0, sentence))
-                continue
+            # Check if sentence contains ANY preserved keyword
+            sentence_lower = sentence.lower()
+            has_preserve_keyword = any(kw.lower() in sentence_lower for kw in preserve_keywords)
             
             # Calculate redundancy score
             word_count = len(words)
             if word_count == 0:
                 scored_sentences.append((i, 0.0, sentence))
+                continue
+            
+            # If has preserved keyword, give highest importance AND ensure it's always kept
+            if has_preserve_keyword:
+                scored_sentences.append((i, 2.0, sentence))  # Highest priority
                 continue
             
             # Stop word ratio (higher = more redundant)
@@ -221,10 +243,18 @@ class TokenCompressor:
         scored_sentences.sort(key=lambda x: x[1], reverse=True)
         
         keep_count = max(1, int(len(sentences) * target_ratio))
-        kept_indices = set(i for i, _, _ in scored_sentences[:keep_count])
+        
+        # Always include sentences with preserved keywords (score >= 2.0)
+        keyword_sentences = [(idx, score, sent) for idx, score, sent in scored_sentences if score >= 2.0]
+        keyword_indices = {idx for idx, _, _ in keyword_sentences}
+        regular_sentences = [(idx, score, sent) for idx, score, sent in scored_sentences if score < 2.0]
+        
+        keep_from_regular = max(0, keep_count - len(keyword_indices))
+        kept_indices = {idx for idx, _, _ in regular_sentences[:keep_from_regular]}
+        kept_indices.update(keyword_indices)
         
         # Reconstruct (preserving original order)
-        result_sentences = [s for i, _, s in scored_sentences if i in kept_indices]
+        result_sentences = [sent for idx, _, sent in scored_sentences if idx in kept_indices]
         
         return " ".join(result_sentences)
     
@@ -286,8 +316,7 @@ class TokenCompressor:
         
         for line in lines:
             line = line.strip()
-            if not line:
-                continue
+            if not line: continue
             
             # Preserve system messages
             if line.lower().startswith('system:') or line.lower().startswith('system message'):
@@ -305,8 +334,7 @@ class TokenCompressor:
                 continue
             
             # Remove very short, non-essential lines
-            if len(line.split()) < 3:
-                continue
+            if len(line.split()) < 3: continue
             
             # Otherwise, compress by removing adjectives/adverbs (simplified)
             words = line.split()
@@ -314,8 +342,7 @@ class TokenCompressor:
             # Simplified: keep words > 4 chars (likely content words)
             compressed_words = [w for w in words if len(w) > 4 or w.isupper()]
             
-            if compressed_words:
-                result_lines.append(" ".join(compressed_words))
+            if compressed_words: result_lines.append(" ".join(compressed_words))
         
         return "\n".join(result_lines)
     
@@ -325,27 +352,20 @@ class TokenCompressor:
         compressed: str,
         preserve_keywords: Optional[List[str]] = None
     ) -> float:
-        """Calculate semantic fidelity score."""
         preserve_keywords = preserve_keywords or []
-        
-        # Check if preserved keywords are intact
         preserved_count = 0
         for kw in preserve_keywords:
-            if kw.lower() in compressed.lower():
-                preserved_count += 1
+            if kw.lower() in compressed.lower(): preserved_count += 1
         keyword_score = preserved_count / len(preserve_keywords) if preserve_keywords else 1.0
         
-        # Check structure preservation
         orig_sentences = len(re.findall(r'[.!?]', original))
         comp_sentences = len(re.findall(r'[.!?]', compressed))
         structure_ratio = comp_sentences / orig_sentences if orig_sentences > 0 else 1.0
         
-        # Length ratio (shouldn't be too short)
         orig_len = len(original)
         comp_len = len(compressed)
         length_ratio = comp_len / orig_len if orig_len > 0 else 1.0
         
-        # Combined score
         confidence = (keyword_score * 0.4 + structure_ratio * 0.3 + min(length_ratio, 1.0) * 0.3)
         return min(1.0, confidence)
 
@@ -367,8 +387,8 @@ class SemanticCompressor:
             from sentence_transformers import SentenceTransformer
             self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         except ImportError:
-            # Fallback to simple TF-IDF
-            self.embedding_model = "tfidf"
+            # Fallback to simple keyword-based
+            self.embedding_model = "keyword"
     
     def compress(
         self,
@@ -400,69 +420,95 @@ class SemanticCompressor:
                 billable=True
             )
         
-        # Compute embeddings and find similar chunks
-        if self.embedding_model == "tfidf":
-            # Simple TF-IDF fallback
-            from sklearn.feature_extraction.text import TfidfVectorizer
-            vectorizer = TfidfVectorizer(stop_words='english')
-            try:
-                tfidf_matrix = vectorizer.fit_transform(chunks)
-            except ValueError:
-                # All documents might be too short
-                return CompressionResult(
-                    compressed_text=text,
-                    original_tokens=original_tokens,
-                    compressed_tokens=original_tokens,
-                    compression_ratio=1.0,
-                    confidence_score=0.95,
-                    strategy_used="semantic",
-                    processing_time_ms=(time.time() - start_time) * 1000,
-                    billable=True
-                )
+        # Use embedding-based similarity
+        if self.embedding_model == "keyword":
+            # Keyword-based fallback - find chunks with similar keywords AND phrases
+            chunk_data = []
+            for chunk in chunks:
+                words = chunk.lower().split()
+                # Keywords (long words)
+                keywords = set(w for w in words if len(w) > 4)
+                # Key phrases (2-3 word sequences)
+                phrases = set()
+                for k in range(2, min(4, len(words))):
+                    for m in range(len(words) - k + 1):
+                        phrases.add(" ".join(words[m:m+k]))
+                chunk_data.append({"keywords": keywords, "phrases": phrases, "text": chunk})
+            
+            # Find similar chunks based on keyword AND phrase overlap
+            keep_indices = list(range(len(chunk_data))) 
+            keyword_threshold = 0.10
+            phrase_threshold = 0.05
+            
+            indices_to_remove = set()
+
+            for i in range(len(chunk_data)):
+                if i not in keep_indices: continue 
+                for j in range(i + 1, len(chunk_data)):
+                    if j not in keep_indices: continue 
+                    
+                    kw_overlap = len(chunk_data[i]["keywords"] & chunk_data[j]["keywords"])
+                    kw_union = len(chunk_data[i]["keywords"] | chunk_data[j]["keywords"])
+                    kw_similarity = kw_overlap / kw_union if kw_union > 0 else 0
+                    
+                    phrase_overlap = len(chunk_data[i]["phrases"] & chunk_data[j]["phrases"])
+                    phrase_union = len(chunk_data[i]["phrases"] | chunk_data[j]["phrases"])
+                    phrase_similarity = phrase_overlap / phrase_union if phrase_union > 0 else 0
+                    
+                    combined_similarity = (kw_similarity * 0.4 + phrase_similarity * 0.6)
+                    
+                    if combined_similarity > (keyword_threshold * 0.4 + phrase_threshold * 0.6):
+                        indices_to_remove.add(j)
+            
+            keep_indices = [idx for idx in keep_indices if idx not in indices_to_remove]
+
         else:
-            # Use sentence transformers
             embeddings = self.embedding_model.encode(chunks)
             from sklearn.metrics.pairwise import cosine_similarity
             similarity_matrix = cosine_similarity(embeddings)
-        
-        # Identify redundant chunks (keep the first of similar pairs)
-        keep_indices = set(range(len(chunks)))
-        threshold = 1.0 - target_ratio
-        
-        for i in range(len(chunks)):
-            for j in range(i + 1, len(chunks)):
-                if j not in keep_indices:
-                    continue
-                
-                # Check similarity
-                if self.embedding_model == "tfidf":
-                    sim = cosine_similarity(tfidf_matrix[i:i+1], tfidf_matrix[j:j+1])[0][0]
-                else:
+            
+            keep_indices = list(range(len(chunks)))
+            threshold = 1.0 - target_ratio
+            
+            for i in range(len(chunks)):
+                for j in range(i + 1, len(chunks)):
+                    if j not in keep_indices:
+                        continue
+                    
                     sim = similarity_matrix[i][j]
-                
-                if sim > threshold:
-                    # Remove the later (less important) chunk
-                    keep_indices.discard(j)
+                    
+                    if sim > threshold:
+                        keep_indices.remove(j) 
         
-        # Reconstruct
-        compressed_chunks = [chunks[i] for i in sorted(keep_indices)]
+        compressed_chunks = [chunks[idx] for idx in sorted(list(keep_indices))] 
         compressed_text = "\n\n".join(compressed_chunks)
         
+        if not compressed_chunks and chunks:
+            compressed_text = chunks[0] 
+            
         compressed_tokens = Tokenizer().count_tokens(compressed_text)
         ratio = compressed_tokens / original_tokens if original_tokens > 0 else 1.0
         
-        # Confidence based on how much we preserved
-        confidence = len(keep_indices) / len(chunks) if chunks else 1.0
+        chunk_count = len(chunks) if chunks else 1
+        actual_compression = compressed_tokens < original_tokens
+        
+        if actual_compression:
+            confidence = (len(keep_indices) / chunk_count) * (1.0 - abs(ratio - target_ratio)) 
+        else:
+            confidence = (len(keep_indices) / chunk_count) * 0.5 
+
+        final_confidence = min(1.0, max(0.0, confidence))
+        billable = final_confidence >= 0.5 and actual_compression
         
         return CompressionResult(
             compressed_text=compressed_text,
             original_tokens=original_tokens,
             compressed_tokens=compressed_tokens,
             compression_ratio=round(ratio, 3),
-            confidence_score=round(confidence, 3),
+            confidence_score=round(final_confidence, 3),
             strategy_used="semantic",
             processing_time_ms=round((time.time() - start_time) * 1000, 2),
-            billable=confidence >= 0.5
+            billable=billable
         )
 
 
@@ -477,15 +523,23 @@ class StrategySelector:
             'token' | 'semantic' | 'auto'
         """
         # Heuristics for strategy selection
-        token_count = Tokenizer().count_tokens(text)
+        tokenizer = Tokenizer()
+        token_count = tokenizer.count_tokens(text)
+        
+        # Count paragraphs
+        paragraph_count = text.count('\n\n') + 1 if text.strip() else 1
+        
+        # Multiple paragraphs benefit from semantic (regardless of token count)
+        if paragraph_count >= 3:
+            return "semantic"
+        
+        # Long texts with many tokens benefit from semantic
+        if token_count > 1000:
+            return "semantic"
         
         # Short texts benefit more from token compression
-        if token_count < 500:
+        if token_count < 200:
             return "token"
-        
-        # Long texts with paragraphs benefit from semantic
-        if '\n\n' in text and token_count > 1000:
-            return "semantic"
         
         # Default to token for most cases
         return "token"

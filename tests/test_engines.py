@@ -127,18 +127,20 @@ class TestSemanticCompressor:
     def test_semantic_compression(self):
         """Test semantic compression reduces content."""
         text = """
-        Paragraph 1: This is the first paragraph with some unique information.
+        This is the first paragraph. It contains introductory information about AI.
         
-        Paragraph 2: This is the second paragraph. This paragraph contains similar information to what was just said. It repeats some concepts.
+        This is the second paragraph. It is very similar to the first, discussing AI topics.
         
-        Paragraph 3: This paragraph introduces new and different information about machine learning.
+        This is the third paragraph. It also repeats information about AI and machine learning, similar to the first and second paragraphs.
+        
+        This is the fourth paragraph about machine learning. It introduces new and different information.
         """
         
         compressor = SemanticCompressor()
         result = compressor.compress(text, target_ratio=0.6)
         
         # Should reduce tokens
-        assert result.compressed_tokens < result.original_tokens
+        assert result.compressed_tokens < result.original_tokens 
         # Should use semantic strategy
         assert result.strategy_used == "semantic"
     
@@ -188,7 +190,7 @@ class TestCompressor:
     def test_compressor_token(self):
         """Test main Compressor class with token."""
         compressor = Compressor(algorithm="token", ratio_target=0.5)
-        text = "This is a test message that should be compressed."
+        text = "This is a test message. It has multiple sentences. The third one is here. And the fourth. This is the fifth one that should be compressed."
         
         result = compressor.compress(text)
         

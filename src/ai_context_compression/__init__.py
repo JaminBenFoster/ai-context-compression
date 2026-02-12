@@ -123,4 +123,5 @@ class Compressor:
         # Compress (system messages will be preserved by the engine)
         result = self.compress(text)
         
-        return result.compressed_text, result.to_dict()
+        # Return flattened metadata for easier access
+        return result.compressed_text, result.to_dict()["metadata"]

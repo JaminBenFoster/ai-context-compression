@@ -1,0 +1,21 @@
+Metadata-Version: 2.1
+Name: ai-context-compression
+Version: 0.1.0
+Summary: AI Context Compression & Transport API
+Home-page: https://github.com/JaminBenFoster/ai-context-compression
+Author: AI Context Compression Team
+Author-email: dev@example.com
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
+Provides-Extra: dev
