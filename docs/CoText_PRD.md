@@ -274,19 +274,29 @@ All errors follow a consistent format:
 **So that** I send only the most relevant information to the LLM.
 
 **Acceptance Criteria:**
-1. Identifies semantically similar/redundant sentences using embedding similarity
-2. Removes lowest-information sentences while preserving meaning flow
+1. Identifies semantically similar/redundant text chunks using embedding-based cosine similarity
+2. Removes redundant paragraphs/sentences while preserving meaning flow
 3. Maintains logical coherence (no orphaned references or dangling pronouns)
 4. Achieves 30-60% token reduction depending on redundancy level
-5. Confidence score reflects embedding similarity between original and compressed text
+5. Confidence score reflects actual compression achieved and semantic preservation
 6. Processing time < 500ms for inputs up to 10,000 tokens
-7. Gracefully degrades for very short inputs (< 100 tokens): returns original with confidence 1.0 and billable: false
+7. Gracefully degrades for very short inputs (< 100 tokens or single chunk): returns original with confidence 1.0 and billable: false
 
 **Technical Notes:**
-- Uses all-MiniLM-L6-v2 (384-dim embeddings, 22M params)
-- Sentence-level segmentation using rule-based splitter (not NLTK — too heavy for serverless)
-- Cosine similarity threshold for redundancy detection: configurable, default 0.85
-- Final output re-scored against original for confidence score
+- **Dependency:** sentence-transformers>=2.2.0 (Python implementation)
+- **Model:** all-MiniLM-L6-v2 (384-dim embeddings, 22M params)
+- **Algorithm:** 
+  1. Split text into chunks (paragraphs preferred, fallback to sentences)
+  2. Generate embeddings for all chunks using SentenceTransformer
+  3. Build N x N cosine similarity matrix via sklearn.metrics.pairwise.cosine_similarity
+  4. Greedy selection: keep first chunk, remove subsequent chunks with similarity > threshold to any kept chunk
+  5. Reconstruct text from kept chunks in original order
+- **Similarity Threshold:** Configurable, default 0.85 (85% similarity considered redundant)
+- **Billable Logic:** Only bills when confidence >= 0.5 AND actual token reduction achieved
+- **Implementation:** See `SemanticCompressor` class in `engines.py`
+
+**Architecture Decision (Feb 13, 2026):**
+Initially implemented a keyword/phrase overlap heuristic as a fallback. This approach failed to reliably detect semantic redundancy because keyword overlap is a poor proxy for semantic meaning. The implementation was refactored to use sentence-transformers with real embeddings, which correctly identifies semantically similar content regardless of keyword overlap.
 
 ---
 
