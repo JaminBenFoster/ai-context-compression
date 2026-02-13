@@ -122,27 +122,35 @@ class TestTokenCompressor:
 
 
 class TestSemanticCompressor:
-    """Test semantic compression."""
+    """Test semantic compression using embeddings."""
     
-#     def test_semantic_compression(self):
-        """Test semantic compression reduces content."""
+    def test_semantic_compression(self):
+        """Test semantic compression reduces content by removing redundant paragraphs."""
+        # Create text with clearly redundant content about similar topics
         text = """
-        This is the first paragraph. It contains introductory information about AI.
-        
-        This is the second paragraph. It is very similar to the first, discussing AI topics.
-        
-        This is the third paragraph. It also repeats information about AI and machine learning, similar to the first and second paragraphs.
-        
-        This is the fourth paragraph about machine learning. It introduces new and different information.
+        Artificial intelligence is transforming modern technology in significant ways. Machine learning algorithms can now process vast amounts of data.
+
+        AI systems are revolutionizing modern technology through advanced capabilities. Machine learning methods enable processing of large data volumes efficiently.
+
+        Cloud computing provides scalable infrastructure for businesses of all sizes. Distributed systems allow companies to handle massive workloads.
+
+        Deep learning represents a subset of machine learning with neural networks. These techniques power many AI applications we use daily.
         """
         
         compressor = SemanticCompressor()
-        result = compressor.compress(text, target_ratio=0.6)
+        result = compressor.compress(text, similarity_threshold=0.85)
         
-        # Should reduce tokens
-        assert result.compressed_tokens < result.original_tokens 
+        # Should reduce tokens by removing redundant paragraphs about AI/ML
+        assert result.compressed_tokens < result.original_tokens, (
+            f"Expected compression but got {result.compressed_tokens} tokens "
+            f"from {result.original_tokens} original"
+        )
         # Should use semantic strategy
         assert result.strategy_used == "semantic"
+        # Should be billable since compression occurred
+        assert result.billable == True
+        # Should have reasonable confidence
+        assert result.confidence_score >= 0.5
     
     def test_semantic_preserves_different_content(self):
         """Test semantic compression keeps different concepts."""

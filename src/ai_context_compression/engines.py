@@ -374,38 +374,56 @@ class SemanticCompressor:
     """
     Semantic compression using embeddings.
     
-    Identifies redundant concepts and removes overlapping information.
+    Identifies redundant concepts and removes overlapping information
+    using cosine similarity of sentence embeddings.
     """
     
-    def __init__(self):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        self.model_name = model_name
         self.embedding_model = None
         self._load_embedding_model()
     
     def _load_embedding_model(self):
-        """Load embedding model (Xenova/all-MiniLM-L6-v2)."""
+        """Load sentence-transformer model for embeddings."""
         try:
             from sentence_transformers import SentenceTransformer
-            self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            self.embedding_model = SentenceTransformer(self.model_name)
         except ImportError:
-            # Fallback to simple keyword-based
-            self.embedding_model = "keyword"
+            raise ImportError(
+                "sentence-transformers is required for semantic compression. "
+                "Install with: pip install sentence-transformers"
+            )
     
     def compress(
         self,
         text: str,
         target_ratio: float = 0.5,
-        preserve_keywords: Optional[List[str]] = None
+        preserve_keywords: Optional[List[str]] = None,
+        similarity_threshold: float = 0.85
     ) -> CompressionResult:
-        """Compress text using semantic similarity."""
+        """
+        Compress text by removing semantically redundant chunks.
+        
+        Args:
+            text: Input text to compress
+            target_ratio: Target compression ratio (not used directly, similarity threshold drives removal)
+            preserve_keywords: Keywords to preserve (not implemented for semantic - all content considered)
+            similarity_threshold: Cosine similarity threshold above which chunks are considered redundant
+            
+        Returns:
+            CompressionResult with compressed text and metadata
+        """
         import time
         start_time = time.time()
         
-        original_tokens = Tokenizer().count_tokens(text)
+        tokenizer = Tokenizer()
+        original_tokens = tokenizer.count_tokens(text)
         
-        # Split into meaningful chunks (paragraphs or sentences)
+        # Split into meaningful chunks (paragraphs preferred, fallback to sentences)
         chunks = [p.strip() for p in text.split('\n\n') if p.strip()]
-        if not chunks:
-            chunks = re.split(r'(?<=[.!?])\s+', text)
+        if len(chunks) < 2:
+            # Try splitting by sentences if not enough paragraphs
+            chunks = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
         
         if len(chunks) <= 1:
             # Nothing to compress semantically
@@ -417,95 +435,60 @@ class SemanticCompressor:
                 confidence_score=1.0,
                 strategy_used="semantic",
                 processing_time_ms=(time.time() - start_time) * 1000,
-                billable=True
+                billable=False  # No compression occurred
             )
         
-        # Use embedding-based similarity
-        if self.embedding_model == "keyword":
-            # Keyword-based fallback - find chunks with similar keywords AND phrases
-            chunk_data = []
-            for chunk in chunks:
-                words = chunk.lower().split()
-                # Keywords (long words)
-                keywords = set(w for w in words if len(w) > 4)
-                # Key phrases (2-3 word sequences)
-                phrases = set()
-                for k in range(2, min(4, len(words))):
-                    for m in range(len(words) - k + 1):
-                        phrases.add(" ".join(words[m:m+k]))
-                chunk_data.append({"keywords": keywords, "phrases": phrases, "text": chunk})
-            
-            # Find similar chunks based on keyword AND phrase overlap
-            keep_indices = list(range(len(chunk_data))) 
-            keyword_threshold = 0.10
-            phrase_threshold = 0.05
-            
-            indices_to_remove = set()
-
-            for i in range(len(chunk_data)):
-                if i not in keep_indices: continue 
-                for j in range(i + 1, len(chunk_data)):
-                    if j not in keep_indices: continue 
-                    
-                    kw_overlap = len(chunk_data[i]["keywords"] & chunk_data[j]["keywords"])
-                    kw_union = len(chunk_data[i]["keywords"] | chunk_data[j]["keywords"])
-                    kw_similarity = kw_overlap / kw_union if kw_union > 0 else 0
-                    
-                    phrase_overlap = len(chunk_data[i]["phrases"] & chunk_data[j]["phrases"])
-                    phrase_union = len(chunk_data[i]["phrases"] | chunk_data[j]["phrases"])
-                    phrase_similarity = phrase_overlap / phrase_union if phrase_union > 0 else 0
-                    
-                    combined_similarity = (kw_similarity * 0.4 + phrase_similarity * 0.6)
-                    
-                    if combined_similarity > (keyword_threshold * 0.4 + phrase_threshold * 0.6):
-                        indices_to_remove.add(j)
-            
-            keep_indices = [idx for idx in keep_indices if idx not in indices_to_remove]
-
-        else:
-            embeddings = self.embedding_model.encode(chunks)
-            from sklearn.metrics.pairwise import cosine_similarity
-            similarity_matrix = cosine_similarity(embeddings)
-            
-            keep_indices = list(range(len(chunks)))
-            threshold = 1.0 - target_ratio
-            
-            for i in range(len(chunks)):
-                for j in range(i + 1, len(chunks)):
-                    if j not in keep_indices:
-                        continue
-                    
-                    sim = similarity_matrix[i][j]
-                    
-                    if sim > threshold:
-                        keep_indices.remove(j) 
+        # Generate embeddings for all chunks
+        embeddings = self.embedding_model.encode(chunks, convert_to_numpy=True)
         
-        compressed_chunks = [chunks[idx] for idx in sorted(list(keep_indices))] 
+        # Calculate pairwise cosine similarities
+        from sklearn.metrics.pairwise import cosine_similarity
+        similarity_matrix = cosine_similarity(embeddings)
+        
+        # Greedy selection: keep first chunk, remove subsequent chunks that are too similar
+        keep_indices = [0]  # Always keep the first chunk
+        
+        for i in range(1, len(chunks)):
+            # Check similarity against all kept chunks
+            is_redundant = False
+            for kept_idx in keep_indices:
+                sim = similarity_matrix[i][kept_idx]
+                if sim > similarity_threshold:
+                    is_redundant = True
+                    break
+            
+            if not is_redundant:
+                keep_indices.append(i)
+        
+        # Reconstruct compressed text (preserve original order)
+        compressed_chunks = [chunks[i] for i in sorted(keep_indices)]
         compressed_text = "\n\n".join(compressed_chunks)
         
-        if not compressed_chunks and chunks:
-            compressed_text = chunks[0] 
-            
-        compressed_tokens = Tokenizer().count_tokens(compressed_text)
+        compressed_tokens = tokenizer.count_tokens(compressed_text)
         ratio = compressed_tokens / original_tokens if original_tokens > 0 else 1.0
+        actual_reduction = original_tokens - compressed_tokens
         
-        chunk_count = len(chunks) if chunks else 1
-        actual_compression = compressed_tokens < original_tokens
+        # Confidence based on how many chunks we kept and actual compression achieved
+        compression_achieved = 1.0 - ratio
+        chunk_retention = len(keep_indices) / len(chunks)
         
-        if actual_compression:
-            confidence = (len(keep_indices) / chunk_count) * (1.0 - abs(ratio - target_ratio)) 
+        # Higher confidence when we achieved meaningful compression without removing everything
+        if compression_achieved > 0.1 and len(keep_indices) >= 1:
+            confidence = 0.7 + (compression_achieved * 0.3)  # 0.7-1.0 based on compression
+        elif compression_achieved > 0:
+            confidence = 0.5 + (compression_achieved * 0.4)  # 0.5-0.9 for minor compression
         else:
-            confidence = (len(keep_indices) / chunk_count) * 0.5 
-
-        final_confidence = min(1.0, max(0.0, confidence))
-        billable = final_confidence >= 0.5 and actual_compression
+            confidence = 0.3  # Low confidence if no compression
+        
+        confidence = min(1.0, max(0.0, confidence))
+        billable = confidence >= 0.5 and actual_reduction > 0
         
         return CompressionResult(
             compressed_text=compressed_text,
             original_tokens=original_tokens,
             compressed_tokens=compressed_tokens,
             compression_ratio=round(ratio, 3),
-            confidence_score=round(final_confidence, 3),
+            confidence_score=round(confidence, 3),
             strategy_used="semantic",
             processing_time_ms=round((time.time() - start_time) * 1000, 2),
             billable=billable
